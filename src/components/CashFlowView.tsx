@@ -136,14 +136,16 @@ export default function CashFlowView({
     }
   };
 
+  const hasPrevMonth = month > 1 || yearList.includes(year - 1);
+  const hasNextMonth = month < 12 || yearList.includes(year + 1);
+
   const handlePrevMonth = () => {
     if (month === 1) {
       const prevYear = year - 1;
-      if (!yearList.includes(prevYear)) {
-        setYearList([...yearList, prevYear].sort((a, b) => a - b));
+      if (yearList.includes(prevYear)) {
+        setYear(prevYear);
+        setMonth(12);
       }
-      setYear(prevYear);
-      setMonth(12);
     } else {
       setMonth(month - 1);
     }
@@ -152,11 +154,10 @@ export default function CashFlowView({
   const handleNextMonth = () => {
     if (month === 12) {
       const nextYear = year + 1;
-      if (!yearList.includes(nextYear)) {
-        setYearList([...yearList, nextYear].sort((a, b) => a - b));
+      if (yearList.includes(nextYear)) {
+        setYear(nextYear);
+        setMonth(1);
       }
-      setYear(nextYear);
-      setMonth(1);
     } else {
       setMonth(month + 1);
     }
@@ -270,8 +271,13 @@ export default function CashFlowView({
             <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
               <button
                 onClick={handlePrevMonth}
-                className="p-1 rounded-lg hover:bg-white dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-colors"
-                title="Mês Anterior"
+                disabled={!hasPrevMonth}
+                className={`p-1 rounded-lg transition-colors ${
+                  hasPrevMonth
+                    ? "hover:bg-white dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer"
+                    : "opacity-30 text-slate-400 dark:text-slate-600 cursor-not-allowed"
+                }`}
+                title={hasPrevMonth ? "Mês Anterior" : "Ano anterior não cadastrado"}
               >
                 <ChevronLeft className="h-4 w-4" />
               </button>
@@ -280,8 +286,13 @@ export default function CashFlowView({
               </span>
               <button
                 onClick={handleNextMonth}
-                className="p-1 rounded-lg hover:bg-white dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition-colors"
-                title="Próximo Mês"
+                disabled={!hasNextMonth}
+                className={`p-1 rounded-lg transition-colors ${
+                  hasNextMonth
+                    ? "hover:bg-white dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer"
+                    : "opacity-30 text-slate-400 dark:text-slate-600 cursor-not-allowed"
+                }`}
+                title={hasNextMonth ? "Próximo Mês" : "Próximo ano não cadastrado"}
               >
                 <ChevronRight className="h-4 w-4" />
               </button>

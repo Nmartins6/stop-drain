@@ -30,12 +30,25 @@ export async function replicateRecurringItem(
   const y = startYear ?? now.getFullYear();
   const m = startMonth ?? now.getMonth() + 1;
 
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { customYears: true, deletedYears: true },
+  });
+  const customYears: number[] = workspace?.customYears ? JSON.parse(workspace.customYears) : [];
+  const deletedYears: number[] = workspace?.deletedYears ? JSON.parse(workspace.deletedYears) : [];
+
   const touchedYears = new Set<number>();
 
   for (let i = 0; i < duration; i++) {
     const targetDate = addMonths(new Date(y, m - 1, 1), i);
     const targetYear = targetDate.getFullYear();
     const targetMonth = targetDate.getMonth() + 1;
+
+    // Se o ano foi explicitamente excluído pelo usuário, NUNCA gerar transação nele!
+    if (deletedYears.includes(targetYear)) {
+      continue;
+    }
+
     touchedYears.add(targetYear);
 
     const startDate = startOfMonth(targetDate);
@@ -68,31 +81,24 @@ export async function replicateRecurringItem(
     }
   }
 
-  // Garantir que todos os anos sequenciais alcançados sejam ativados no Workspace
-  if (touchedYears.size > 0) {
-    const workspace = await prisma.workspace.findUnique({
-      where: { id: workspaceId },
-      select: { customYears: true, deletedYears: true },
-    });
-    const customYears: number[] = workspace?.customYears ? JSON.parse(workspace.customYears) : [];
-    const deletedYears: number[] = workspace?.deletedYears ? JSON.parse(workspace.deletedYears) : [];
-
-    const touchedArr = Array.from(touchedYears);
+  // Garantir que todos os anos sequenciais alcançados e não-excluídos sejam ativados no Workspace
+  const touchedArr = Array.from(touchedYears).filter((yr) => !deletedYears.includes(yr));
+  if (touchedArr.length > 0) {
     const minYr = Math.min(...touchedArr);
     const maxYr = Math.max(...touchedArr);
     const allYearsToEnsure: number[] = [];
     for (let yr = minYr; yr <= maxYr; yr++) {
-      allYearsToEnsure.push(yr);
+      if (!deletedYears.includes(yr)) {
+        allYearsToEnsure.push(yr);
+      }
     }
 
     const newCustomYears = Array.from(new Set([...customYears, ...allYearsToEnsure])).sort((a, b) => a - b);
-    const newDeletedYears = deletedYears.filter((yr) => !allYearsToEnsure.includes(yr));
 
     await prisma.workspace.update({
       where: { id: workspaceId },
       data: {
         customYears: JSON.stringify(newCustomYears),
-        deletedYears: JSON.stringify(newDeletedYears),
       },
     });
   }
@@ -112,6 +118,12 @@ export async function replicateInstallmentPlan(
   });
   if (!plan || !plan.isActive) return;
 
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { deletedYears: true },
+  });
+  const deletedYears: number[] = workspace?.deletedYears ? JSON.parse(workspace.deletedYears) : [];
+
   const now = new Date();
   const y = startYear ?? plan.startYear ?? now.getFullYear();
   const m = startMonth ?? plan.startMonth ?? now.getMonth() + 1;
@@ -123,6 +135,11 @@ export async function replicateInstallmentPlan(
     const targetDate = addMonths(new Date(y, m - 1, 1), i);
     const targetYear = targetDate.getFullYear();
     const targetMonth = targetDate.getMonth() + 1;
+
+    // Se o ano foi explicitamente excluído, não gerar parcela nele!
+    if (deletedYears.includes(targetYear)) {
+      continue;
+    }
 
     const startDate = startOfMonth(targetDate);
     const endDate = endOfMonth(targetDate);
@@ -156,105 +173,17 @@ export async function replicateInstallmentPlan(
 }
 
 /**
- * Garante que itens recorrentes e parcelamentos ativos estejam presentes
- * como transações pendentes no mês solicitado (Lazy Hydration).
+ * @deprecated Hidratação sob demanda desativada para manter a pureza de leitura das APIs
+ * e garantir que transações e anos excluídos pelo usuário nunca ressuscitem ao serem abertos.
+ * Todas as replicações ocorrem exclusivamente de forma explícita na criação do item.
  */
-export async function hydrateMonthlyRecurring(workspaceId: string, year: number, month: number) {
-  // Verificar se o ano foi explicitamente excluído pelo usuário
-  const workspace = await prisma.workspace.findUnique({
-    where: { id: workspaceId },
-    select: { deletedYears: true },
-  });
-  const deletedYears: number[] = workspace?.deletedYears ? JSON.parse(workspace.deletedYears) : [];
-  if (deletedYears.includes(year)) {
-    return; // Não hidratar contas em um ano excluído
-  }
-
-  const startDate = startOfMonth(new Date(year, month - 1, 1));
-  const endDate = endOfMonth(new Date(year, month - 1, 1));
-  const daysInCurrentMonth = getDaysInMonth(startDate);
-
-  // 1. Hidratar RecurringItems
-  const recurringItems = await prisma.recurringItem.findMany({
-    where: { workspaceId, isActive: true },
-  });
-
-  for (const item of recurringItems) {
-    const existingTx = await prisma.transaction.findFirst({
-      where: {
-        workspaceId,
-        recurringItemId: item.id,
-        date: { gte: startDate, lte: endDate },
-      },
-    });
-
-    if (!existingTx) {
-      const day = Math.min(item.dueDay, daysInCurrentMonth);
-      const txDate = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
-
-      await prisma.transaction.create({
-        data: {
-          workspaceId,
-          recurringItemId: item.id,
-          categoryId: item.categoryId,
-          description: item.title,
-          amount: item.amount,
-          type: item.type || "SAIDA_FIXA",
-          isPaid: false,
-          date: txDate,
-        },
-      });
-    }
-  }
-
-  // 2. Hidratar InstallmentPlans ativos
-  const activePlans = await prisma.installmentPlan.findMany({
-    where: {
-      workspaceId,
-      isActive: true,
-      remainingBalance: { gt: 0 },
-    },
-  });
-
-  for (const plan of activePlans) {
-    const planStartY = plan.startYear || 2026;
-    const planStartM = plan.startMonth || 1;
-    const monthDiff = (year - planStartY) * 12 + (month - planStartM);
-    const totalRemaining = plan.totalInstallments - plan.currentInstallment + 1;
-
-    // Se estiver fora do período do parcelamento (antes de começar ou após a quitação total), não gerar!
-    if (monthDiff < 0 || monthDiff >= totalRemaining) {
-      continue;
-    }
-
-    const installmentNum = plan.currentInstallment + monthDiff;
-
-    const existingTx = await prisma.transaction.findFirst({
-      where: {
-        workspaceId,
-        installmentPlanId: plan.id,
-        date: { gte: startDate, lte: endDate },
-      },
-    });
-
-    if (!existingTx) {
-      const day = Math.min(plan.dueDay, daysInCurrentMonth);
-      const txDate = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
-
-      await prisma.transaction.create({
-        data: {
-          workspaceId,
-          installmentPlanId: plan.id,
-          categoryId: plan.categoryId,
-          description: `${plan.description} (${installmentNum}/${plan.totalInstallments})`,
-          amount: plan.monthlyAmount,
-          type: "SAIDA_FIXA",
-          isPaid: false,
-          date: txDate,
-        },
-      });
-    }
-  }
+export async function hydrateMonthlyRecurring(
+  _workspaceId: string,
+  _year: number,
+  _month: number
+) {
+  // No-op intencional: evita ressuscitar transações ou anos excluídos
+  return;
 }
 
 /**
@@ -287,9 +216,6 @@ export async function getOpeningBalance(workspaceId: string, year: number, month
  * Monta a matriz diária (dias 1 a 28/30/31) com cálculo contínuo roll-forward
  */
 export async function getMonthlyCashFlow(workspaceId: string, year: number, month: number) {
-  // Garantir que as contas do mês foram geradas
-  await hydrateMonthlyRecurring(workspaceId, year, month);
-
   const startDate = startOfMonth(new Date(year, month - 1, 1));
   const endDate = endOfMonth(new Date(year, month - 1, 1));
   const daysCount = getDaysInMonth(startDate);
@@ -824,7 +750,15 @@ export async function deleteWorkspaceYear(workspaceId: string, year: number) {
     },
   });
 
-  // 4. Atualizar Workspace deletedYears e customYears
+  // 4. Excluir itens recorrentes que ficaram sem nenhuma transação
+  const deleteRecurringResult = await prisma.recurringItem.deleteMany({
+    where: {
+      workspaceId,
+      transactions: { none: {} },
+    },
+  });
+
+  // 5. Atualizar Workspace deletedYears e customYears
   const workspace = await prisma.workspace.findUnique({
     where: { id: workspaceId },
     select: { customYears: true, deletedYears: true },
@@ -844,7 +778,7 @@ export async function deleteWorkspaceYear(workspaceId: string, year: number) {
     },
   });
 
-  // 5. Recalcular o saldo devedor de parcelamentos restantes
+  // 6. Recalcular o saldo devedor de parcelamentos restantes
   const remainingPlans = await prisma.installmentPlan.findMany({
     where: { workspaceId },
     include: { transactions: true },
@@ -855,7 +789,10 @@ export async function deleteWorkspaceYear(workspaceId: string, year: number) {
       .reduce((sum, t) => sum + t.amount, 0);
     await prisma.installmentPlan.update({
       where: { id: plan.id },
-      data: { remainingBalance: Number(unpaidSum.toFixed(2)) },
+      data: {
+        remainingBalance: Number(unpaidSum.toFixed(2)),
+        isActive: unpaidSum > 0,
+      },
     });
   }
 
@@ -867,6 +804,7 @@ export async function deleteWorkspaceYear(workspaceId: string, year: number) {
     deletedTransactions: deleteTxResult.count,
     deletedSavings: deleteSavingsResult.count,
     deletedPlans: deletePlansResult.count,
+    deletedRecurring: deleteRecurringResult.count,
     years: updatedYears,
   };
 }
