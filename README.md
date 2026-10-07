@@ -12,7 +12,7 @@ Aplicação web completa para gestão financeira pessoal com fluxo de caixa diá
 
 ### 1. Clonar o Repositório e Instalar Dependências
 ```bash
-git clone <url-do-repositorio>
+git clone git@github.com:Nmartins6/stop-drain.git
 cd financas
 npm install
 ```
