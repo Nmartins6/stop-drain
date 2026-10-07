@@ -1,0 +1,139 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id               String            @id @default(uuid())
+  name             String
+  email            String            @unique
+  passwordHash     String
+  themePreference  String            @default("system")
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  workspaces       WorkspaceMember[]
+}
+
+model Workspace {
+  id               String            @id @default(uuid())
+  name             String
+  calendarToken    String            @unique @default(uuid())
+  customYears      String            @default("[]")
+  deletedYears     String            @default("[]")
+  createdAt        DateTime          @default(now())
+  members          WorkspaceMember[]
+  categories       Category[]
+  transactions     Transaction[]
+  recurringItems   RecurringItem[]
+  installmentPlans InstallmentPlan[]
+  savingsRecords   SavingsRecord[]
+}
+
+model WorkspaceMember {
+  id          String    @id @default(uuid())
+  workspaceId String
+  userId      String
+  role        String    @default("OWNER")
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+}
+
+model Category {
+  id               String            @id @default(uuid())
+  workspaceId      String
+  name             String
+  icon             String            @default("tag")
+  color            String            @default("#64748b")
+  type             String            // "ENTRADA" | "SAIDA_FIXA" | "GASTO_DIARIO"
+  createdAt        DateTime          @default(now())
+
+  workspace        Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  transactions     Transaction[]
+  recurringItems   RecurringItem[]
+  installmentPlans InstallmentPlan[]
+
+  @@index([workspaceId, type])
+}
+
+model Transaction {
+  id                String           @id @default(uuid())
+  workspaceId       String
+  categoryId        String?
+  installmentPlanId String?
+  recurringItemId   String?
+  date              DateTime         // Data da transação (YYYY-MM-DD 00:00:00 UTC)
+  amount            Float
+  type              String           // "ENTRADA" | "SAIDA_FIXA" | "GASTO_DIARIO"
+  description       String
+  isPaid            Boolean          @default(false)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  workspace         Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  category          Category?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  installmentPlan   InstallmentPlan? @relation(fields: [installmentPlanId], references: [id], onDelete: SetNull)
+  recurringItem     RecurringItem?   @relation(fields: [recurringItemId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, date])
+  @@index([workspaceId, isPaid])
+}
+
+model RecurringItem {
+  id             String        @id @default(uuid())
+  workspaceId    String
+  categoryId     String?
+  title          String
+  type           String        @default("SAIDA_FIXA") // "ENTRADA" | "SAIDA_FIXA"
+  dueDay         Int           // 1 a 31
+  amount         Float
+  monthsDuration Int           @default(36)
+  isActive       Boolean       @default(true)
+  createdAt      DateTime      @default(now())
+
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  category    Category?     @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  transactions Transaction[]
+
+  @@index([workspaceId, isActive])
+}
+
+model InstallmentPlan {
+  id                 String        @id @default(uuid())
+  workspaceId        String
+  categoryId         String?
+  description        String
+  totalInstallments  Int
+  currentInstallment Int           @default(1)
+  monthlyAmount      Float
+  remainingBalance   Float
+  dueDay             Int           // 1 a 31
+  startYear          Int           @default(2026)
+  startMonth         Int           @default(1)
+  isActive           Boolean       @default(true)
+  createdAt          DateTime      @default(now())
+
+  workspace          Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  category           Category?     @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  transactions       Transaction[]
+
+  @@index([workspaceId, isActive])
+}
+
+model SavingsRecord {
+  id          String    @id @default(uuid())
+  workspaceId String
+  yearMonth   String    // "YYYY-MM"
+  amountSaved Float
+  notes       String?
+  createdAt   DateTime  @default(now())
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, yearMonth])
+}
